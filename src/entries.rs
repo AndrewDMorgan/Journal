@@ -4,7 +4,7 @@ use serde;
 use crate::TermRender;
 use crate::TermRender::{Colorize};
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Logs(Vec<Log>);
 
 impl Logs {
@@ -29,10 +29,12 @@ impl std::ops::IndexMut<usize> for Logs {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(Clone)]
 pub struct Log {
-    entry_date: String,
-    entry_title: String,
-    entry_text: String,
+    pub entry_date: String,
+    pub entry_title: String,
+    pub entry_text: String,
+    pub events: Option<Vec<String>>,
 }
 
 impl Log {
@@ -44,23 +46,37 @@ impl Log {
             entry_date,
             entry_title,
             entry_text,
+            events: None,
         }
     }
     
     pub fn get_render_text(&self) -> Vec<TermRender::Span> {
         let date_span = TermRender::Span::FromTokens(vec![
-            "                                ".Colorizes(vec![]),
+            "     ".Colorizes(vec![]),
             self.entry_date.Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Bold]),
         ]);
         let title_span = TermRender::Span::FromTokens(vec![
             " *".Colorizes(vec![]),
-            self.entry_text.Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic]),
+            self.entry_title.Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic]),
             "*".Colorizes(vec![]),
         ]);
         let text_span = TermRender::Span::FromTokens(vec![
             self.entry_text.Colorizes(vec![TermRender::ColorType::White])
         ]);
-        vec![date_span, title_span, text_span]
+        let mut events = vec![
+            TermRender::Span::FromTokens(vec![]),
+            TermRender::Span::FromTokens(vec![
+                " Events:".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic])
+            ]),
+        ];
+        for event in self.events.as_ref().unwrap_or(&vec![]) {
+            let span = TermRender::Span::FromTokens(vec![
+                "  * ".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic]),
+                event.Colorizes(vec![TermRender::ColorType::White])
+            ]);
+            events.push(span);
+        }
+        vec![vec![date_span, title_span, text_span], events].concat()
     }
     
     pub fn get_title(&self) -> String {
@@ -69,6 +85,12 @@ impl Log {
     
     pub fn get_date(&self) -> String {
         self.entry_date.clone()
+    }
+    
+    pub fn add_event(&mut self, event: String) {
+        if self.events.is_none() {  self.events = Some(vec![]);  }
+        let events = self.events.as_mut().unwrap();
+        events.push(event);
     }
     
     fn get_week_day(time: &chrono::prelude::DateTime<chrono::Local>) -> String {
