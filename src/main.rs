@@ -52,7 +52,8 @@ impl App {
     }
     
     async fn run(&mut self) {
-        let _result = self.run_internal().await;
+        let result = self.run_internal().await;
+        println!("{:?}", result);
         self.save();  // even if it crashes gently, it should hopefully save still
     }
     
@@ -70,6 +71,8 @@ impl App {
         let mut key_parser = KeyParser::new();
         let mut buffer = [0; 128];
         let mut stdin = io::stdin();
+        
+        self.scrolled = self.logs.len().saturating_sub(self.area.height as usize / 2 - 1);
         
         self.render_logs().await;
         self.renderer.Render(Some((self.area.width, self.area.height)));
@@ -121,12 +124,17 @@ impl App {
     
     async fn handle_mouse_events(&mut self, key_parser: &KeyParser) {
         if let Some(event) = &key_parser.mouseEvent {
-            if event.eventType == MouseEventType::Left && event.state == MouseState::Release {
+            if event.eventType == MouseEventType::Left {
                 // checking the bounds
                 if self.creator_button.is_some() && event.position.0 > 25 && event.position.1 > 5 &&
                     event.position.0 < self.area.width - 25 && event.position.1 < self.area.height - 5 {
-                    self.creator_button.as_mut().unwrap().handle_mouse_events_for_creator(key_parser, event, &self.area, &mut self.logs, self.editing_index);
+                    if event.state == MouseState::Release {
+                        self.creator_button.as_mut().unwrap().handle_mouse_events_for_creator(key_parser, event, &self.area, &mut self.logs, self.editing_index);
+                    } else {
+                        self.creator_button.as_mut().unwrap().handle_held_mouse(key_parser, event, &self.area, &mut self.logs, self.editing_index);
+                    }
                 } else if event.position.0 < 50 {
+                    if event.state != MouseState::Release {  return;  }
                     // getting the height
                     let index = event.position.1 as usize / 2 + self.scrolled - 1;
                     if index < self.logs.len() {
@@ -139,13 +147,18 @@ impl App {
                             // removing the render window for the log
                             let _ = self.renderer.RemoveWindow(String::from("LogView"));
                             let _ = self.renderer.RemoveWindow(String::from("EditButton"));
+                            let _ = self.renderer.RemoveWindow(String::from("DelButton"));
                         } else {
                             if self.selected.is_some() {
                                 self.renderer.GetWindowReferenceMut(String::from("EditButton")).UpdateAll();  // so it isn't clipped in half
+                                self.renderer.GetWindowReferenceMut(String::from("DelButton")).UpdateAll();  // so it isn't clipped in half
+                                self.renderer.GetWindowReferenceMut(String::from("Create")).UpdateAll();  // so it isn't clipped in half
                             }
                             self.selected = Some(index);
                         }
                     }
+                } else if event.state != MouseState::Release {
+                    return;  // only care about clicks, not releases outside the menu and scrolling in log list
                 } else if event.position.0 >= self.area.width - 16 && event.position.0 < self.area.width &&
                           event.position.1 >= self.area.height - 3 && event.position.1 < self.area.height && self.editing_index.is_none() {
                     // opening the creation menu
@@ -168,12 +181,42 @@ impl App {
                         button.events = log.events.clone().unwrap_or(vec![]);
                         button.title = log.entry_title.clone();
                         button.text = log.entry_text.clone();
+                        button.events = log.events.as_ref().unwrap_or(&vec![]).clone();
+                        button.food = log.food.as_ref().unwrap_or(&vec![]).clone();
+                        button.mood_quality = log.mood.as_ref().map_or(5, |m| m.quality);
+                        button.mood_description = log.mood.as_ref().map_or(String::new(), |m| m.description.clone());
+                        button.mood_reason = log.mood.as_ref().and_then(|m| m.reason.clone()).unwrap_or(String::new());
+                        button.update_cursors();
                         
                         self.creator_button = Some(button);
                     } else {
                         let _ = self.renderer.RemoveWindow(String::from("CreatorMenu"));
                         self.creator_button = None;
                     }
+                } else if event.position.0 >= self.area.width - 22 && event.position.1 <= self.area.width - 13 &&
+                    event.position.1 > 1 && event.position.1 < 5 && self.creator_button.is_none() &&
+                    self.renderer.ContainsWindow(String::from("DelButton")) && self.creator_button.is_none() {
+                    // deleting the log
+                    if self.selected.is_some() {
+                        self.logs.remove(self.selected.unwrap());
+                        self.selected = None;
+                        let _ = self.renderer.RemoveWindow(String::from("LogView"));
+                        let _ = self.renderer.RemoveWindow(String::from("EditButton"));
+                        let _ = self.renderer.RemoveWindow(String::from("DelButton"));
+                        self.scrolled = self.scrolled.saturating_sub(1);
+                        self.save();  // saving the result
+                    }
+                }
+            } else if event.position.0 < 50 {
+                // checking for scrolling
+                if event.eventType == MouseEventType::Down {
+                    self.scrolled = usize::min(
+                        self.scrolled + (key_parser.scrollAccumulate * 4.) as usize,
+                        self.logs.len().saturating_sub(1)
+                    );
+                }
+                if event.eventType == MouseEventType::Up {
+                    self.scrolled = self.scrolled.saturating_sub((key_parser.scrollAccumulate * -4.) as usize);
                 }
             }
         }
@@ -203,8 +246,12 @@ impl App {
                 let mut window = TermRender::Window::new((25, 5), 2, (self.area.width - 50, self.area.height - 10));
                 window.Bordered();
                 window.Colorize(TermRender::ColorType::Bold);
+                let create_text = match self.editing_index {
+                    Some(_) => " Editing Entry ",
+                    None =>    "Create New Entry"
+                };
                 window.TitledColored(TermRender::Span::FromTokens(vec![
-                    "Create New Entry".Colorizes(vec![TermRender::ColorType::Bold, TermRender::ColorType::BrightWhite])
+                    create_text.Colorizes(vec![TermRender::ColorType::Bold, TermRender::ColorType::BrightWhite])
                 ]));
                 window.FromLines(button.get_window_text(&self.area));
                 self.renderer.AddWindow(window, String::from("CreatorMenu"), vec![String::from("Pop Up")]);
@@ -214,7 +261,7 @@ impl App {
     
     async fn render_logs(&mut self) {
         let mut render = vec![];
-        let start_index = self.logs.len().saturating_sub(self.scrolled + (self.area.height / 2) as usize);
+        let start_index = self.scrolled;
         for index in start_index..self.logs.len() {
             let log = &self.logs[index];
             // printing the title and date
@@ -259,6 +306,9 @@ impl App {
             // adding the edit button     String::from("EditButton")
             let log = self.renderer.GetWindowReferenceMut(String::from("EditButton"));
             log.Move((self.area.width - 11, 2));
+            
+            let log = self.renderer.GetWindowReferenceMut(String::from("DelButton"));
+            log.Move((self.area.width - 22, 2));
         } else {
             let mut window = TermRender::Window::new((50, 1), 0, (self.area.width - 49, self.area.height));
             window.Bordered();
@@ -274,6 +324,13 @@ impl App {
             ]));
             self.renderer.AddWindow(window, String::from("EditButton"), vec![]);
             
+            let mut window = TermRender::Window::new((self.area.width - 22, 2), 1, (10, 3));
+            window.Bordered();
+            window.AddLine(TermRender::Span::FromTokens(vec![
+                " Delete ".Colorizes(vec![TermRender::ColorType::Bold, TermRender::ColorType::BrightWhite])
+            ]));
+            self.renderer.AddWindow(window, String::from("DelButton"), vec![]);
+
             // updating the creation button
             self.renderer.GetWindowReferenceMut(String::from("Create")).UpdateAll();
             if self.creator_button.is_some() {
@@ -288,15 +345,22 @@ enum CreationField {
     Title,
     Text,
     Events,
+    Foods,
+    MoodDescription,
+    MoodReason,
 }
 
 struct CreatorButton {
     selected_field: Option<CreationField>,
     title: String,
     text: String,
-    cursors: [usize; 3],
+    cursors: [usize; 6],
     pub dead: bool,
     events: Vec<String>,
+    food: Vec<String>,
+    mood_quality: usize,
+    mood_description: String,
+    mood_reason: String,
 }
 
 impl CreatorButton {
@@ -305,10 +369,24 @@ impl CreatorButton {
             selected_field: None,
             title: String::new(),
             text: String::new(),
-            cursors: [0usize; 3],
+            cursors: [0usize; 6],
             dead: false,
             events: vec![],
+            food: vec![],
+            mood_quality: 5,
+            mood_description: String::new(),
+            mood_reason: String::new(),
         }
+    }
+    
+    pub fn update_cursors(&mut self) {
+        self.cursors = [
+            self.title.len(),
+            self.text.len(),
+            0, 0,
+            self.mood_description.len(),
+            self.mood_reason.len(),
+        ];
     }
     
     pub fn handle_events(&mut self, key_parser: &KeyParser) {
@@ -317,7 +395,7 @@ impl CreatorButton {
         }
         if key_parser.ContainsKeyCode(KeyCode::Escape) {
             match &self.selected_field {
-                Some(_) => self.selected_field = None,
+                Some(err) => self.selected_field = None,
                 None => self.dead = true,
             }
         }
@@ -371,7 +449,56 @@ impl CreatorButton {
                     text_field.pop();
                 }
             },
+            Some(CreationField::Foods) => {
+                if self.cursors[3] >= self.food.len() {  return;  }
+                let text_field = &mut self.food[self.cursors[3]];
+                text_field.push_str(&typed_text);
+                if key_parser.ContainsKeyCode(KeyCode::Delete) {
+                    text_field.pop();
+                }
+            },
+            Some(CreationField::MoodDescription) => {
+                self.mood_description.insert_str(self.cursors[4], &typed_text);
+                self.cursors[4] += typed_text.len();
+                if key_parser.ContainsKeyCode(KeyCode::Delete) {
+                    if self.cursors[4] > self.mood_description.len() || self.mood_description.is_empty() || self.cursors[4] == 0 {  return;  }
+                    self.mood_description.remove(self.cursors[4].saturating_sub(1));
+                    self.cursors[4] -= 1;
+                }
+                if key_parser.ContainsKeyCode(KeyCode::Left) {
+                    self.cursors[4] = self.cursors[4].saturating_sub(1);
+                }
+                if key_parser.ContainsKeyCode(KeyCode::Right) {
+                    self.cursors[4] = usize::min(self.cursors[4] + 1, self.mood_description.len());
+                }
+            },
+            Some(CreationField::MoodReason) => {
+                self.mood_reason.insert_str(self.cursors[5], &typed_text);
+                self.cursors[5] += typed_text.len();
+                if key_parser.ContainsKeyCode(KeyCode::Delete) {
+                    if self.cursors[5] > self.mood_reason.len() || self.mood_reason.is_empty() || self.cursors[5] == 0 {  return;  }
+                    self.mood_reason.remove(self.cursors[5].saturating_sub(1));
+                    self.cursors[5] -= 1;
+                }
+                if key_parser.ContainsKeyCode(KeyCode::Left) {
+                    self.cursors[5] = self.cursors[5].saturating_sub(1);
+                }
+                if key_parser.ContainsKeyCode(KeyCode::Right) {
+                    self.cursors[5] = usize::min(self.cursors[5] + 1, self.mood_reason.len());
+                }
+            },
             _ => {}
+        }
+    }
+    
+    pub fn handle_held_mouse (&mut self, _key_parser: &KeyParser, event: &MouseEvent, area: &TermRender::Rect, _logs: &mut Logs, _index: Option<usize>) {
+        let half_width = area.width / 2;
+        let starting_index = 15 + self.events.len() + 2 + self.food.len() + 2;
+        if event.position.1 == starting_index as u16 - 1 && event.position.0 >= half_width - 10 && event.position.0 <= half_width + 10 {
+            // adjusting the mood quality
+            let quality = event.position.0 - (half_width - 10);
+            self.mood_quality = (quality / 2).clamp(1, 10) as usize;
+            return;
         }
     }
     
@@ -405,6 +532,14 @@ impl CreatorButton {
                 for event in &self.events {
                     logs[index].add_event(event.clone());
                 }
+                for food in &self.food {
+                    logs[index].add_food(food.clone());
+                }
+                logs[index].mood = Some(entries::Mood {
+                    quality: self.mood_quality,
+                    description: self.mood_description.clone(),
+                    reason: if self.mood_reason.is_empty() { None } else { Some(self.mood_reason.clone()) },
+                });
                 self.dead = true;
                 return;
             }
@@ -413,6 +548,14 @@ impl CreatorButton {
             for event in &self.events {
                 logs[index].add_event(event.clone());
             }
+            for food in &self.food {
+                logs[index].add_food(food.clone());
+            }
+            logs[index].mood = Some(entries::Mood {
+                quality: self.mood_quality,
+                description: self.mood_description.clone(),
+                reason: if self.mood_reason.is_empty() { None } else { Some(self.mood_reason.clone()) },
+            });
             self.dead = true;
             return;
         }
@@ -432,6 +575,41 @@ impl CreatorButton {
             self.selected_field = Some(CreationField::Events);
             self.cursors[2] = event.position.1 as usize - 14;
             
+            return;
+        }
+        
+        // checking for foods
+        let starting_index = 15 + self.events.len();
+        if event.position.0 >= half_width - 10 && event.position.0 <= half_width + 10 && event.position.1 == starting_index as u16 {
+            self.selected_field = Some(CreationField::Foods);
+            self.cursors[3] = self.food.len();
+            self.food.push(String::new());
+            return;
+        }
+        
+        // checking for individual event elements
+        if event.position.1 > starting_index as u16 && event.position.1 <= starting_index as u16 + self.food.len() as u16 &&
+            event.position.0 >= half_width - 5 - self.food[event.position.1 as usize - starting_index - 1].len() as u16 / 2 &&
+            event.position.0 <= half_width + 5 + self.food[event.position.1 as usize - starting_index - 1].len() as u16 / 2
+        {
+            self.selected_field = Some(CreationField::Foods);
+            self.cursors[3] = event.position.1 as usize - starting_index - 1;
+            return;
+        }
+        
+        let starting_index = 15 + self.events.len() + 2 + self.food.len() + 2;
+        
+        if event.position.1 == starting_index as u16 + 2 && event.position.0 >= half_width - self.mood_description.len() as u16 - 5 &&
+           event.position.0 <= half_width + self.mood_description.len() as u16 + 5
+        {
+            self.selected_field = Some(CreationField::MoodDescription);
+            return;
+        }
+        
+        if event.position.1 == starting_index as u16 + 5 && event.position.0 >= half_width - self.mood_reason.len() as u16 - 5 &&
+           event.position.0 <= half_width + self.mood_reason.len() as u16 + 5
+        {
+            self.selected_field = Some(CreationField::MoodReason);
             return;
         }
         
@@ -487,7 +665,7 @@ impl CreatorButton {
         // rendering the button to add another event
         render[7] = TermRender::Span::FromTokens(vec![
             Self::center_padding(area, "*Add Event*".len()),
-            "*Add Events".Colorizes(vec![TermRender::ColorType::BrightWhite, TermRender::ColorType::Italic])
+            "*Add Events*".Colorizes(vec![TermRender::ColorType::BrightWhite, TermRender::ColorType::Italic])
         ]);
         
         // rendering the current events
@@ -507,6 +685,94 @@ impl CreatorButton {
             ]);
             index += 1;
         }
+        
+        // rendering the button to add another event
+        index += 1;
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, "*Add Foods*".len()),
+            "*Add Foods*".Colorizes(vec![TermRender::ColorType::BrightWhite, TermRender::ColorType::Italic])
+        ]);
+        index += 1;
+        
+        // rendering the current events
+        let start_index = index;
+        for item in &self.food {
+            let field_text = String::from(match item.is_empty() {
+                true => "-- Text Here --",
+                false => item
+            });
+            render[index] = TermRender::Span::FromTokens(vec![
+                Self::center_padding(area, field_text.len()),
+                field_text.Colorizes({
+                    if self.selected_field == Some(CreationField::Foods) && self.cursors[3] == index - start_index {
+                        vec![TermRender::ColorType::White, TermRender::ColorType::Underline]
+                    } else {  vec![TermRender::ColorType::White]  }
+                })
+            ]);
+            index += 1;
+        }
+        
+        index += 1;
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, "*Mood (1-10)*".len()),
+            "*Mood (1-10)*".Colorizes(vec![TermRender::ColorType::BrightWhite, TermRender::ColorType::Italic])
+        ]);
+        index += 1;
+        
+        // rendering mood quality (slider of sorts ig)
+        // slides from left to right, using a white background with bright white slider, and black text
+        let quality_text = vec![
+            "==".repeat(self.mood_quality - 1).Colorizes(vec![TermRender::ColorType::OnWhite, TermRender::ColorType::BrightBlack]),
+            format!("{:=>2}", self.mood_quality).Colorizes(vec![TermRender::ColorType::Black, TermRender::ColorType::OnBrightWhite]),
+            "==".repeat(10 - self.mood_quality).Colorizes(vec![TermRender::ColorType::OnWhite, TermRender::ColorType::BrightBlack]),
+        ];  // the total size is 2 * 10 or 20
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, 20),
+            quality_text[0].clone(),
+            quality_text[1].clone(),
+            quality_text[2].clone(),
+        ]);
+        index += 2;
+        
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, "*Mood Description*".len()),
+            "*Mood Description*".Colorizes(vec![TermRender::ColorType::BrightWhite, TermRender::ColorType::Italic])
+        ]);
+        index += 1;
+        
+        // rendering mood description
+        let field_text = String::from(match self.mood_description.is_empty() {
+            true => "-- Text Here --",
+            false => &self.mood_description
+        });
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, field_text.len()),
+            field_text.Colorizes(match self.selected_field {
+                Some(CreationField::MoodDescription) => vec![TermRender::ColorType::White, TermRender::ColorType::Underline],
+                _ => vec![TermRender::ColorType::White],
+            })
+        ]);
+        index += 2;
+        
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, "*Mood Reason*".len()),
+            "*Mood Reason*".Colorizes(vec![TermRender::ColorType::BrightWhite, TermRender::ColorType::Italic])
+        ]);
+        index += 1;
+        
+        // rendering mood reason
+        let field_text = String::from(match self.mood_reason.is_empty() {
+            true => "-- Text Here --",
+            false => &self.mood_reason
+        });
+        render[index] = TermRender::Span::FromTokens(vec![
+            Self::center_padding(area, field_text.len()),
+            field_text.Colorizes(match self.selected_field {
+                Some(CreationField::MoodReason) => vec![TermRender::ColorType::White, TermRender::ColorType::Underline],
+                _ => vec![TermRender::ColorType::White],
+            })
+        ]);
+        index += 2;
         
         // adding the button for completion
         let render_len = render.len() - 1;
@@ -531,6 +797,19 @@ impl CreatorButton {
         " ".repeat(offset).Colorizes(vec![])
     }
 }
+
+/*
+todo!s:
+
+    todo! add scrolling before I get flooded!!!
+        -- now just de-jank-ify it (could be a lot smoother, but it seems to work for now at a minimum)
+     
+    at some point think about adding a delete option ig  (could finally get rid of the initial test file)
+        -- also delete options for the elements in lists like events
+    
+    todo! make term render correctly render borders when using emojis (which aren't represented with escape codes)
+ 
+*/
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> io::Result<()> {

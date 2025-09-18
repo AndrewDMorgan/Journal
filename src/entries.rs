@@ -11,6 +11,7 @@ impl Logs {
     pub fn len(&self) -> usize { self.0.len() }
     pub fn push(&mut self, item: Log) { self.0.push(item) }
     pub fn new() -> Self { Self {0: vec![]} }
+    pub fn remove(&mut self, index: usize) -> Log { self.0.remove(index) }
 }
 
 impl std::ops::Index<usize> for Logs {
@@ -28,13 +29,21 @@ impl std::ops::IndexMut<usize> for Logs {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-#[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct Mood {
+    pub quality: usize,
+    pub description: String,
+    pub reason: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Log {
     pub entry_date: String,
     pub entry_title: String,
     pub entry_text: String,
     pub events: Option<Vec<String>>,
+    pub food: Option<Vec<String>>,
+    pub mood: Option<Mood>,
 }
 
 impl Log {
@@ -47,12 +56,14 @@ impl Log {
             entry_title,
             entry_text,
             events: None,
+            food: None,
+            mood: None,
         }
     }
     
     pub fn get_render_text(&self) -> Vec<TermRender::Span> {
         let date_span = TermRender::Span::FromTokens(vec![
-            "     ".Colorizes(vec![]),
+            "  - ".Colorizes(vec![]),
             self.entry_date.Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Bold]),
         ]);
         let title_span = TermRender::Span::FromTokens(vec![
@@ -63,12 +74,15 @@ impl Log {
         let text_span = TermRender::Span::FromTokens(vec![
             self.entry_text.Colorizes(vec![TermRender::ColorType::White])
         ]);
-        let mut events = vec![
-            TermRender::Span::FromTokens(vec![]),
-            TermRender::Span::FromTokens(vec![
-                " Events:".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic])
-            ]),
-        ];
+        let mut events = vec![];
+        if !self.events.as_ref().unwrap_or(&vec![]).is_empty() {
+            events = vec![
+                TermRender::Span::FromTokens(vec![]),
+                TermRender::Span::FromTokens(vec![
+                    " Events:".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic])
+                ]),
+            ];
+        }
         for event in self.events.as_ref().unwrap_or(&vec![]) {
             let span = TermRender::Span::FromTokens(vec![
                 "  * ".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic]),
@@ -76,7 +90,62 @@ impl Log {
             ]);
             events.push(span);
         }
-        vec![vec![date_span, title_span, text_span], events].concat()
+        
+        let mut foods = vec![];
+        if !self.food.as_ref().unwrap_or(&vec![]).is_empty() {
+            foods = vec![
+                TermRender::Span::FromTokens(vec![]),
+                TermRender::Span::FromTokens(vec![
+                    " Food:".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic])
+                ]),
+            ];
+        }
+        for item in self.food.as_ref().unwrap_or(&vec![]) {
+            let span = TermRender::Span::FromTokens(vec![
+                "  * ".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic]),
+                item.Colorizes(vec![TermRender::ColorType::White])
+            ]);
+            foods.push(span);
+        }
+        
+        let mut mood_text = vec![];
+        if let Some(mood) = &self.mood {
+            mood_text = vec![
+                TermRender::Span::FromTokens(vec![]),
+                TermRender::Span::FromTokens(vec![
+                    " Mood:".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic])
+                ]),
+            ];
+            
+            // mood ranges from 1 through 10
+            let mood_icon = match mood.quality {
+                1 | 2 => "😞",
+                3 | 4 => "😕",
+                5 | 6 => "😐",
+                7 | 8 => "🙂",
+                9 | 10 => "😄",
+                _ => "❓",
+            };
+            mood_text.push(
+                TermRender::Span::FromTokens(vec![
+                    " * ".Colorizes(vec![]),
+                    mood_icon.Colorizes(vec![TermRender::ColorType::White]),
+                    format!(" ({}/10)", mood.quality).Colorizes(vec![TermRender::ColorType::White]),
+                    " ".Colorizes(vec![]),
+                    mood.description.Colorizes(vec![TermRender::ColorType::White]),
+                ])
+            );
+            if let Some(reason) = &mood.reason {
+                mood_text.push(
+                    TermRender::Span::FromTokens(vec![
+                        " * Reason: ".Colorizes(vec![TermRender::ColorType::White, TermRender::ColorType::Italic]),
+                        reason.Colorizes(vec![TermRender::ColorType::White]),
+                    ])
+                );
+            }
+        }
+        
+        vec![vec![date_span, title_span, text_span], events, foods, mood_text].concat()
     }
     
     pub fn get_title(&self) -> String {
@@ -91,6 +160,12 @@ impl Log {
         if self.events.is_none() {  self.events = Some(vec![]);  }
         let events = self.events.as_mut().unwrap();
         events.push(event);
+    }
+    
+    pub fn add_food(&mut self, item: String) {
+        if self.food.is_none() {  self.food = Some(vec![]);  }
+        let food = self.food.as_mut().unwrap();
+        food.push(item);
     }
     
     fn get_week_day(time: &chrono::prelude::DateTime<chrono::Local>) -> String {
